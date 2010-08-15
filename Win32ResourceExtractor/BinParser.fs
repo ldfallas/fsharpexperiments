@@ -66,29 +66,22 @@ module BinParserModule =
                 fun (i:BinaryReader) -> Success(i.ReadBytes(length),i)))
 
 
+
  let RZString =
    BinParser(IOExceptionHandlingWrapper(
                 fun (i:BinaryReader) -> 
                    let mutable resultList = []
-                   let mutable next = i.ReadByte()
-                   while (next <> byte(0)) do
-                      resultList <- next :: resultList
-                      next <- i.ReadByte()
-                   Success(resultList |> List.rev |> Array.ofList ,i)))
-
- let RZString2 =
-   BinParser(IOExceptionHandlingWrapper(
-                fun (i:BinaryReader) -> 
-                   let mutable resultList = []
-                   printf "-- %O\n" (i.BaseStream.Position)
                    let mutable next = i.ReadChar()
-                   printf "-%O\n" next 
-                   printf "-- %O\n" (i.BaseStream.Position)
                    while (int(next) <> 0) do
                       resultList <- next :: resultList
                       next <- i.ReadChar()
-                      printf "-%O\n" next 
                    Success(resultList |> List.rev |> Array.ofList ,i)))
+
+ let RDWordAlignData(blockSize) =
+     if ( (blockSize &&& 3)  <> 0) then
+        RByteBlock(4 - (blockSize &&& 3) )
+     else
+        BinParser(fun i -> Success([||],i)) 
 
 
  let wrap(parser : BinParser<'a>,wrappingFunction : 'a -> 'b) =
