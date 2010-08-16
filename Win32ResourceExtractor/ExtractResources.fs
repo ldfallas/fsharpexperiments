@@ -13,7 +13,12 @@ let sizeOfResourceId resId =
    | Numeric(_) -> 2 + 2
    | Name(dat) -> dat.Length*2 + 2 
 
- 
+do if (Environment.GetCommandLineArgs().Length <> 2 ||
+       not(File.Exists(Environment.GetCommandLineArgs().[1]))) then
+      printf "You must specify a .res file as the first argument"
+      Environment.Exit(1)
+
+
 let fileName =  Environment.GetCommandLineArgs().[1]
 
 let pBuilder = new BinParserBuilder()
@@ -23,7 +28,7 @@ let resourceParser = pBuilder {
      let! headerSize = RInt
      let! typePrefix = RShort   
      let! resourceType =
-            if typePrefix = int16(-1) then
+            if typePrefix = -1s then
                 wrap(RShort, Numeric)
             else
                 wrap(RZString,
@@ -32,7 +37,7 @@ let resourceParser = pBuilder {
                                            data] )))
      let! namePrefix = RShort   
      let! resourceName =
-            if namePrefix = int16(-1) then
+            if namePrefix = -1s then
                 wrap(RShort, Numeric)
             else
                 wrap(RZString,
@@ -67,14 +72,14 @@ let cursorResEntry = pBuilder {
     let! bitCount = RShort 
     let! bytesInRes = RInt
     let! iconCursorId = RShort
-    return (reserved,restype,rescount),
-           (cursorWidth,cursorHeight),
-           planes,bitCount,bytesInRes,iconCursorId
+    return (reserved, restype, rescount),
+           (cursorWidth, cursorHeight),
+           planes, bitCount, bytesInRes, iconCursorId
 }
 
 let getCursorInfo (data : byte array) =
   use str = new MemoryStream(data)
-  use bReader = new BinaryReader(str,System.Text.Encoding.Unicode)
+  use bReader = new BinaryReader(str, System.Text.Encoding.Unicode)
   cursorResEntry.Function bReader
 
 
@@ -90,9 +95,9 @@ let iconResEntry = pBuilder {
     let! bitCount = RShort 
     let! bytesInRes = RInt
     let! iconCursorId = RShort
-    return (reserved,restype,rescount),
-           (iconWidth,iconHeight,colorCount),
-           planes,bitCount,bytesInRes,iconCursorId
+    return (reserved, restype, rescount),
+           (iconWidth, iconHeight, colorCount),
+           planes, bitCount, bytesInRes, iconCursorId
 }
 
 
@@ -101,6 +106,19 @@ let getIconInfo (data : byte array) =
   use str = new MemoryStream(data)
   use bReader = new BinaryReader(str)
   iconResEntry.Function bReader
+
+let cursorIconInfo resourceInfo resourceType infoExtractFunction extension =
+     match resourceInfo with
+     | Some(resName,Numeric(rType),data) when rType = resourceType  -> 
+            match resName,(infoExtractFunction data) with
+            | Numeric(id), Success(t,_) ->
+                       Some(sprintf "%s%O.%s" extension  id extension,t)
+            | Name(nameChars), Success(t,_) -> 
+                       Some(new String(nameChars) + "." + extension,t)
+            | _,_ ->
+                 printf "WARNING: Skipping resource: %O\n" id
+                 None
+     | _ -> None
 
 
 let filterMap f = 
@@ -112,11 +130,15 @@ let filterMap f =
 
 let isEntryWithId cursorId entry =
     match entry with 
-    | Some(Numeric(v),_,_) when v = cursorId -> true
+    | Some(Numeric(v), _, _) when v = cursorId -> true
     | _ -> false
 
-let writeIcon(index:int16,(width:byte,height:byte,bitcount:byte),bpp:int16,planes:int16,contents:byte array) =
-    use writer = new FileStream(sprintf "icon%d.ico" index,FileMode.Create)
+let writeIcon(fileName,
+              (width : byte, height : byte, bitcount : byte),
+              bpp : int16,
+              planes : int16,
+              contents : byte array) =
+    use writer = new FileStream(fileName, FileMode.Create)
     use bwriter = new BinaryWriter(writer)
     bwriter.Write(0s)
     bwriter.Write(1s)
@@ -129,7 +151,7 @@ let writeIcon(index:int16,(width:byte,height:byte,bitcount:byte),bpp:int16,plane
     bwriter.Write(bpp)
     bwriter.Write(contents.Length)
     bwriter.Write(int32(writer.Position) + 4)
-    bwriter.Write(contents )
+    bwriter.Write(contents)
 
 let writeBmp(name,data:byte array) =
     use writer = new FileStream(name,FileMode.Create)
@@ -139,6 +161,8 @@ let writeBmp(name,data:byte array) =
     bwriter.Write(14  + data.Length)
     bwriter.Write(5s)
     bwriter.Write(5s)
+    // According to the DIB header the image color depth
+    // is located ad offset 14
     let paletteSize =
          if data.[14] < 24uy then
             int((2.0 ** float(data.[14])) * 4.0)
@@ -165,9 +189,13 @@ let writeCursor(fileName, bitcount : byte, contents : byte array) =
     bwriter.Write(contents.Length - 4)
     bwriter.Write(int32(writer.Position) + 4)
     bwriter.Write(contents,4,contents.Length - 4 )
-    
-let file = new FileStream(fileName,FileMode.Open)
-let binaryReader = new BinaryReader(file,System.Text.Encoding.Unicode)
+
+
+// Open the resource file
+let file = new FileStream(fileName, FileMode.Open)
+let binaryReader = new BinaryReader(file, System.Text.Encoding.Unicode)
+
+// Extract each entry
 let resources = 
   seq {
      while(file.Position < file.Length) do
@@ -179,50 +207,26 @@ let resources =
 
   
 // Write Cursors
-resources |> 
-   filterMap (fun current -> 
-                   match current with
-                   | Some(resName,Numeric(12s),data)  -> 
-                         match resName,(getCursorInfo data) with
-                         | Numeric(id), Success(t,_) ->
-                                     Some(sprintf "cur%O.cur" id,t)
-                         | Name(nameChars), Success(t,_) -> 
-                                     Some(new String(nameChars) + ".cur",t)
-                         | _,_ ->
-                             printf "WARNING: Skipping resource: %O\n" id
-                             None
-                   | _ -> None) |>
-   filterMap (fun (name,(_,(w,h),_,bitCount,_,cursorId)) -> 
-             let cursorResourceGroup =
-                List.find 
-                     (isEntryWithId cursorId)
-                     resources
-             match cursorResourceGroup with
-             | Some(_,_,theData) -> 
-                 Some(name, min w h, bitCount, theData)
-             | _ -> 
-                 printf "Could not file cursor resource group for %d\n" cursorId
-                 None
-             )  |>
-   Seq.iter ( fun (name,size,bitcount,contents) ->
-                 writeCursor(name,byte(bitcount),contents))
+resources |>
+   filterMap (fun current -> cursorIconInfo current 12s getCursorInfo "cur") |>
+   filterMap (fun (name, (_, (w, h), _, bitCount, _, cursorId)) -> 
+                   match List.find (isEntryWithId cursorId) resources with
+                   | Some(_, _, theData) -> Some(name, bitCount, theData)
+                   | _ -> None)  |>
+   Seq.iter ( fun (name, bitcount, contents) ->
+                 writeCursor(name, byte(bitcount),contents))
 // Write Icons
-resources |> 
-     filterMap id |> 
-     filterMap (fun (id, ttype, z) -> 
-                  match id, ttype with 
-                  | Numeric id, Numeric 14s -> Some(id,z) 
+resources |>
+   filterMap (fun current ->
+                   cursorIconInfo current 14s getIconInfo "ico") |>
+   filterMap (fun (originalid, (_, i, planes, bitcount, bytes, iconId)) -> 
+                  match (List.find (isEntryWithId iconId) resources) with
+                  | Some(_, _, data) ->
+                         Some(originalid, i, planes, bitcount, data)
                   | _ -> None) |>
-     List.map (fun (id,resentry) -> id,(getIconInfo resentry)) |> 
-     filterMap (fun (id,e) -> match e with                
-                              | Success(x, _) -> Some(id,x)
-                              | _ -> None) |> 
-     filterMap (fun (originalid, (_, i, planes, bitcount, bytes, id)) -> 
-             match (List.find (isEntryWithId id) resources) with
-             | Some(_,_,data) -> Some(originalid,i,planes,bitcount,data)
-             | _ -> None) |>
-     Seq.iter (fun (id,(w,h,colorcount),planes,bitcount,contents) -> 
-                  writeIcon(id,(w,h,colorcount),bitcount,planes,contents))
+   Seq.iter (fun (name, (w, h, colorcount), planes, bitcount, contents) -> 
+                  writeIcon(name, (w, h, colorcount),
+                            bitcount, planes, contents))
      
 // Write Bitmaps
 resources |> 
@@ -232,7 +236,7 @@ resources |>
                          | Some(Name nameChars, Numeric 2s, data) -> 
                                  Some(new String(nameChars)+".bmp", data) 
                          | _ -> None) |> 
-   Seq.iter (fun (name,data) -> writeBmp(name,data))
+   Seq.iter (fun (name, data) -> writeBmp(name, data))
 
 
 binaryReader.Close()
